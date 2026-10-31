@@ -4,28 +4,27 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - "APP-20261029T050749Z-1-001.zip"
       - ".github/workflows/build.yml"
+      - "scripts/**"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   raspberry-pi-5-arm64:
     name: Build Raspberry Pi 5 kiosk (ARM64)
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install native build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv python3-tk python3-dev unzip zip libgl1 libglib2.0-0
-
-      - name: Extract application source without private data
+      - name: Extract app sources
         run: |
           mkdir -p incoming buildsrc
           unzip -q APP-20261029T050749Z-1-001.zip -d incoming
@@ -33,63 +32,49 @@ jobs:
           test -f incoming/APP/files/kiosk_bridge/firebase_bridge.py
           cp incoming/APP/sentro_ginhawa_refined.py buildsrc/sentro_ginhawa.py
           cp incoming/APP/files/kiosk_bridge/firebase_bridge.py buildsrc/firebase_bridge.py
-          # Never put the uploaded .env, SQLite databases, backups, or bytecode in the build.
-          rm -f buildsrc/.env buildsrc/*.db
           python3 -m py_compile buildsrc/sentro_ginhawa.py buildsrc/firebase_bridge.py
-
       - name: Install Python build dependencies
         run: |
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install pyinstaller pillow pyserial python-dotenv reportlab numpy opencv-python-headless
-
+          .venv/bin/python -m pip install pyinstaller pillow pyserial python-dotenv reportlab numpy opencv-python-headless firebase-admin
       - name: Package native ARM64 kiosk
         run: |
           .venv/bin/pyinstaller --noconfirm --clean --onedir --windowed \
-            --name SentroGinhawa \
-            --paths buildsrc \
-            --hidden-import serial.tools.list_ports \
-            --collect-all cv2 \
+            --name SentroGinhawa --paths buildsrc \
+            --hidden-import serial.tools.list_ports --hidden-import firebase_bridge \
+            --collect-all cv2 --collect-all firebase_admin --collect-all google.cloud.firestore \
             --distpath dist --workpath build/pyinstaller --specpath build \
             buildsrc/sentro_ginhawa.py
           test -x dist/SentroGinhawa/SentroGinhawa
           cat > dist/SentroGinhawa/README-INSTALL.txt <<'EOF'
           Sentro Ginhawa kiosk build for Raspberry Pi OS 64-bit (ARM64).
-          
-          This package contains the app executable only. It intentionally does not
-          include .env credentials or any resident database. Configure credentials
-          locally on the Pi and keep the database in a writable application-data
-          directory before production deployment.
-          
-          This artifact is a CI build and has not yet been hardware-tested on a Pi 5.
+          No credentials or resident database are included. Keep device credentials
+          outside this bundle. Test all peripherals and Firebase sync on a real Pi 5.
           EOF
           cd dist && zip -qr SentroGinhawa-RaspberryPi5-ARM64.zip SentroGinhawa
-
-      - name: Upload Raspberry Pi build artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: SentroGinhawa-RaspberryPi5-ARM64
           path: dist/SentroGinhawa-RaspberryPi5-ARM64.zip
           if-no-files-found: error
           retention-days: 14
+      - name: Publish GitHub Release for tagged versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/SentroGinhawa-RaspberryPi5-ARM64.zip
 
   mobile-build-readiness:
     name: Check Flutter mobile build inputs
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Report mobile build blockers
+      - uses: actions/checkout@v4
+      - name: Report Flutter build blockers
         run: |
           unzip -l APP-20261029T050749Z-1-001.zip > /tmp/archive-list.txt
-          if grep -qE 'APP/files/pubspec.yaml|APP/files/sentro_ginhawa_app_update/pubspec.yaml' /tmp/archive-list.txt; then
-            echo "A pubspec.yaml was found in the archive."
-          else
-            echo "::warning::Flutter build not possible yet: the uploaded archive has Dart source but no pubspec.yaml."
-          fi
-          if grep -qE 'firebase_options.dart' /tmp/archive-list.txt; then
-            echo "Firebase options file found."
-          else
-            echo "::warning::Flutter build also needs the project's generated firebase_options.dart."
-          fi
-          echo "No APK is produced by this job; add the original Flutter project metadata and Firebase configuration to enable it."
+          grep -qE 'APP/files/pubspec.yaml|APP/files/sentro_ginhawa_app_update/pubspec.yaml' /tmp/archive-list.txt || echo "::warning::Flutter project pubspec.yaml is missing; APK build cannot run yet."
+          grep -qE 'firebase_options.dart' /tmp/archive-list.txt || echo "::warning::Flutter firebase_options.dart is missing; configure Firebase before APK build."
+          echo "This job checks prerequisites only; it does not claim to build an APK."
