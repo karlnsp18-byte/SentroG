@@ -32,6 +32,27 @@ jobs:
           test -f incoming/APP/files/kiosk_bridge/firebase_bridge.py
           cp incoming/APP/sentro_ginhawa_refined.py buildsrc/sentro_ginhawa.py
           cp incoming/APP/files/kiosk_bridge/firebase_bridge.py buildsrc/firebase_bridge.py
+          # Keep SQLite data and the offline sync outbox in persistent user data,
+          # not inside the replaceable executable bundle.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("buildsrc/sentro_ginhawa.py")
+          s = p.read_text()
+          old = "DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sentro_ginhawa.db')"
+          new = """DATA_HOME = os.path.join(os.path.expanduser("~"), ".local", "share", "sentrog")
+          os.makedirs(DATA_HOME, mode=0o700, exist_ok=True)
+          DB = os.path.join(DATA_HOME, "sentro_ginhawa.db")"""
+          if old not in s:
+              raise SystemExit("Could not safely locate kiosk DB path; stop build for manual review.")
+          p.write_text(s.replace(old, new, 1))
+          p = Path("buildsrc/firebase_bridge.py")
+          s = p.read_text()
+          old = '_OUTBOX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firebase_outbox.jsonl")'
+          new = ' _OUTBOX = os.path.join(os.path.expanduser("~"), ".local", "share", "sentrog", "firebase_outbox.jsonl")'.lstrip()
+          if old not in s:
+              raise SystemExit("Could not safely locate Firebase outbox path; stop build for manual review.")
+          p.write_text(s.replace(old, new, 1))
+          PY
           python3 -m py_compile buildsrc/sentro_ginhawa.py buildsrc/firebase_bridge.py
       - name: Install Python build dependencies
         run: |
